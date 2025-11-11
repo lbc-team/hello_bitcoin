@@ -3,6 +3,9 @@ import * as ecc from 'tiny-secp256k1';
 import { ECPairFactory } from 'ecpair';
 import axios from 'axios';
 
+// Initialize ECC library for bitcoinjs-lib (required for Taproot)
+bitcoin.initEccLib(ecc);
+
 // Initialize ECPair with tiny-secp256k1
 const ECPair = ECPairFactory(ecc);
 
