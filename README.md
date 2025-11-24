@@ -19,6 +19,7 @@ npm run demo:address
 
 - `src/index.ts` - 基础示例：生成比特币测试网地址
 - `src/address-types.ts` - 完整演示：展示四种主要比特币地址类型的推导过程
+- 
 
 ## 支持的地址类型
 
@@ -38,3 +39,6 @@ npm run demo:address
 ## 参考链接
 
 https://mempool.space/testnet4/tx/69b4fe8bf6683e48cea8ffefa853736e519793a5f938fd7ea284267a01162769#flow=&vout=1
+
+
+  - https://mempool.space/testnet4/faucet
