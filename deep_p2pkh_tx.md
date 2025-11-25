@@ -55,7 +55,7 @@ UTXO = {
 2. 构建输出的 UTXO：解析接收者地址生成 scriptPubKey 锁定脚本 
 3. 构造完整交易结构
 4. 交易签名
-5. 发送给矿工节点
+5. 交易广播：发送给矿工节点
 
 
 ### 1：选择 UTXO 作为输入
@@ -90,7 +90,6 @@ vout: 该 UTXO 在交易输出中的索引（从 0 开始）
 ### 2：构建输出的 UTXO
 
 Alice 向 Bob 支付， Alice 通常拿到的是 Bob 的地址，地址只是一串对用户更友好字符串，真正进入交易数据的是脚本（scriptPubKey），我们需要解析接收者地址生成 scriptPubKey 。
-
 
 
 #### 了解 P2PKH 地址是怎么生成 
@@ -194,8 +193,11 @@ scriptPubKey: OP_DUP OP_HASH160 <alicePubKeyHash> OP_EQUALVERIFY OP_CHECKSIG
 }
 ```
 
-但我们要将交易发送到网络，需要把上述对象序列化，使用二进制表示（通常写成 Hex）。序列化数据布局由固定字段 + 变长字段组成：
+但我们要将交易发送到网络，需要把上述对象序列化，即使用二进制表示（通常写成 Hex）数据。比特币交易序列化比较简单，它是按如下约定的方式把数据拼接在一起。
 
+![比特币交易结构](https://img.learnblockchain.cn/pics/20251125171257.png)
+
+数据布局由固定字段 + 变长字段组成：
 **交易整体字段：**
 | 字段 | 大小 | 说明 |
 |------|------|------|
@@ -222,726 +224,247 @@ scriptPubKey: OP_DUP OP_HASH160 <alicePubKeyHash> OP_EQUALVERIFY OP_CHECKSIG
 | scriptPubKey_size | 1-9 bytes | scriptPubKey 长度（VarInt） |
 | scriptPubKey | 变长 | 锁定脚本 |
 
-![比特币交易结构](https://img.learnblockchain.cn/pics/20251125171257.png)
 
-breakout-p2pkh-tx-cal-txid.ts
+有兴趣的同学可通过 [breakout-p2pkh-tx-cal-txid.ts](https://github.com/lbc-team/hello_bitcoin/blob/main/src/breakout-p2pkh-tx-cal-txid.ts) 探究交易细节。
 
 ### 4：签名 
 
-比特币使用 **ECDSA**（Elliptic Curve Digital Signature Algorithm）在 **secp256k1** 曲线上进行签名。
+比特币采用 **ECDSA**（椭圆曲线数字签名算法）并使用 **secp256k1** 曲线。我们可以把私钥当做是解锁 scriptPubKey 的钥匙，签名作为一个解锁过程。
 
-签名是交易构造中最关键的步骤。它证明了你有权花费某个 UTXO。
+#### 准备签名内容 signature preimage
 
-#### 📝 签名的目的
+签名内容通常称为 `signature preimage` 
+SIGHASH 决定签名覆盖的范围，通常是 SIGHASH_ALL， 其他几个类型有：
 
-1. **证明所有权**：只有知道私钥的人才能创建有效签名
-2. **防止篡改**：签名覆盖交易的关键部分，任何修改都会使签名失效
-3. **防止重放**：签名是针对特定交易的，不能用于其他交易
- 
+| 类型 | 值 | 覆盖范围 | 常见用途 |
+|------|---|---------|---------|
+| SIGHASH_ALL | 0x01 | 所有输入 + 所有输出 | 默认，锁死整笔交易 |
+| SIGHASH_NONE | 0x02 | 所有输入 | 输出开放，适合协同补充 |
+| SIGHASH_SINGLE | 0x03 | 所有输入 + 同索引输出 | 只对自己的那笔输出负责 |
+| SIGHASH_ANYONECANPAY | 0x80 | 当前输入 | 允许他人追加额外输入 |
 
-#### 📋 签名流程详解
 
-**第一步：构造签名 (Signature Preimage)**
- 
-**第二步：计算交易哈希**
-```python
+在使用 `SIGHASH_ALL` 类型时签名，signature preimage 是在上一步签名序列化的内容上，将 `scriptSig` 留空的替换为其引用的 UTXO 的 `scriptPubKey` ，并在末尾追加 4 字节小端的 `sighash_type` （此时为小端的 `0x01` ）。
 
-# Double SHA256
+```
+signature_preimage = SHA256(SHA256(serialized_transaction + sighash_type))
+```
 
+#### 计算原像摘要并签名
+
+ **计算消息摘要**：对上述序列化结果做双重 SHA256：
+```
 tx_hash = SHA256(SHA256(signature_preimage))
 ```
-**第三步：使用私钥签名**
-```python
-
-# ECDSA 签名
-
-(r, s) = ecdsa_sign(private_key, tx_hash)
-
-# DER 编码
-signature_der = der_encode(r, s)
-# 添加 sighash type
-
-signature_final = signature_der + bytes([sighash_type])
-```
-**DER 编码格式：**
-```
-30 DER 签名标记
-<length> 总长度
-02 INTEGER 标记 (r)
-<r_length> r 的长度
-<r_bytes> r 的值
-02 INTEGER 标记 (s)
-<s_length> s 的长度
-<s_bytes> s 的值
-```
-示例：
-```
-30 45 DER 签名，长度 69
-02 21 r: INTEGER, 长度 33
-00 c7 e2 b6 8e 51 57 63 r 的值 (33 bytes)
-28 6d 9f 77 60 45 72 80
-21 f0 8e 74 a0 7e 60 75
-75 73 0c fa 20 e8 17 77 a0
-02 20 s: INTEGER, 长度 32
-0c 8b 96 b0 3a 6b af 25 s 的值 (32 bytes)
-cf 40 d1 97 8a b2 9f 9e
-e0 83 00 9e 9f d9 02 06
-f9 ad ff 76 13 26 c4 2a
-01 SIGHASH_ALL
-```
+ **执行 ECDSA 签名**：使用私钥得到 `(r, s)` 对， 用 DER 编码格式封装一下，最后再补充 1 字节 `sighash_type` ，形成真正写回交易的签名字节串。
  
-#### 🏷️ SIGHASH 类型
+签名完成后，需要把“签名 + 公钥”写回输入的 `scriptSig`：
 
+```
+<sig_len> <DER_signature || sighash_type>
+<pub_len> <pubkey_bytes>
+```
 
-
-SIGHASH 类型决定了签名覆盖交易的哪些部分：
-| 类型 | 值 | 覆盖范围 | 用途 |
-|------|---|---------|------|
-| SIGHASH_ALL | 0x01 | 所有输入 + 所有输出 | 最常用，锁定整个交易 |
-| SIGHASH_NONE | 0x02 | 所有输入 | 不关心输出，允许其他人添加 |
-| SIGHASH_SINGLE | 0x03 | 所有输入 + 对应索引的输出 | 只关心特定输出 |
-| SIGHASH_ANYONECANPAY | 0x80 | 当前输入 | 允许其他人添加输入 |
- 
-**SIGHASH_ALL 的实际含义：**
-```
-签名覆盖：
-✓ 所有输入的 (txid, vout)
-✓ 所有输出的 (value, scriptPubKey)
-✓ 交易的 version 和 locktime
-不覆盖：
-✗ scriptSig（签名本身不能包含在签名中）
-✗ witness 数据（SegWit 交易）
-```
- 
-
-
-签名完成后，将签名和公钥组装成 scriptSig：
-```
-scriptSig = <signature> <pubkey>
-```
-**具体格式：**
-```
-<sig_length> <signature_der> <sighash_type> <pubkey_length> <pubkey>
-```
 示例（Hex）：
+
 ```
-48 签名长度 (72 bytes)
-30 45 02 21 00 c7 e2 ... DER 签名 (71 bytes)
-01 SIGHASH_ALL
-21 公钥长度 (33 bytes)
-03 71 cf 10 60 c2 69 3a 压缩公钥
-35 fa 25 08 61 53 0a 25
-e3 06 4d f5 8a 8c a0 9b
-48 c4 73 b8 38 2d 1d 84 55
+48 3045022100c7e2...26c42a01   # 72 字节 DER + 0x01 (SIGHASH_ALL)
+21 0371cf1060c2693a...1d8455   # 33 字节压缩公钥
 ```
-**为什么需要公钥？**
-虽然 scriptPubKey 中包含了 pubKeyHash，但验证时需要完整的公钥来：
-1. 验证 `HASH160(pubKey) == pubKeyHash`
-2. 验证 `ECDSA_VERIFY(pubKey, signature, tx_hash)`
-**完整的输入：**
-```
-Input {
-previous_output: {
-txid: 6ba7cb837205a44c59b205a3c9d01077f6e2968a1941d7b9756d43fe4d1682d7
-vout: 1
-}
-scriptSig: <signature> <pubkey> ← 已填充
-sequence: 0xffffffff
-}
-```
-得到最终交易数据。
 
+当 `scriptSig` 写好后，完整的交易才算真正签名完成，可以进行广播了。
 
+###  交易广播
 
+交易广播很简单，就是将完整的交易序列化后的16 进制通过节点的 RPC 或  API 发送到比特币网络。
 
-### 7：序列化并广播到比特币网络
-
-
-
-**序列化：**
-将交易结构转换为二进制格式（Hex）：
-```python
-def serialize_transaction(tx):
-result = b''
-
-
-
-# Version (4 bytes, little endian)
-
-result += tx.version.to_bytes(4, 'little')
-
-
-
-# Input count (VarInt)
-
-result += varint(len(tx.inputs))
-
-
-
-# Inputs
-
-for inp in tx.inputs:
-result += bytes.fromhex(inp.txid)[::-1] # Reverse for little endian
-result += inp.vout.to_bytes(4, 'little')
-result += varint(len(inp.scriptSig))
-result += inp.scriptSig
-result += inp.sequence.to_bytes(4, 'little')
-
-
-
-# Output count (VarInt)
-
-result += varint(len(tx.outputs))
-
-
-
-# Outputs
-
-for out in tx.outputs:
-result += out.value.to_bytes(8, 'little')
-result += varint(len(out.scriptPubKey))
-result += out.scriptPubKey
-
-
-
-# Locktime (4 bytes, little endian)
-
-result += tx.locktime.to_bytes(4, 'little')
-return result
-```
-**广播：**
-```python
-
-# 1. 计算交易 ID
-
-tx_hex = serialize_transaction(tx).hex()
-tx_id = sha256(sha256(bytes.fromhex(tx_hex)))[::-1].hex()
-
-
-
-# 2. 通过 RPC 或 API 广播
-
-broadcast_transaction(tx_hex)
-```
-**广播方式：**
-1. **Bitcoin Core RPC**
+使用 **Bitcoin Core RPC**
 ```bash
 bitcoin-cli sendrawtransaction <tx_hex>
 ```
-2. **区块链浏览器 API**
+
+使用 **区块链浏览器 API**
 ```bash
 POST https://mempool.space/api/tx
 Body: <tx_hex>
 ```
-3. **P2P 网络**
+
+发送后，我们可以在浏览器中，通过交易 ID 查看的交易的打包情况，交易ID 是 tx_hex 的两次 sha256 ：
+
 ```
-发送 INV 消息 → 其他节点请求 GETDATA → 发送完整交易
-```
----
-
-
-
-## 交易的执行
-
-
-
-当矿工（或全节点）收到一笔交易后，需要验证交易的有效性。对于 P2PKH 交易，核心是验证 **scriptSig 能否解锁 scriptPubKey**。
-
-
-
-### 🎯 比特币脚本系统
-
-
-
-比特币使用一种**基于栈的脚本语言**（Script），类似于 Forth 语言。
-
-
-
-**核心特性：**
-| 特性 | 说明 |
-|------|------|
-| **基于栈** | 使用后进先出（LIFO）的数据结构 |
-| **非图灵完备** | 没有循环，保证脚本会终止 |
-| **确定性** | 相同输入总是产生相同输出 |
-| **无状态** | 不访问外部状态，只操作栈 |
-**为什么非图灵完备？**
-防止脚本无限循环，确保所有节点都能在有限时间内验证交易。
-
-
-
-### 📚 脚本执行模型
-
-
-
-比特币脚本使用一个**主栈**（Main Stack）和一个**备用栈**（Alt Stack）。
-
-
-
-**栈操作示例：**
-```
-初始状态：
-Stack: []
-执行 OP_2:
-Stack: [2]
-执行 OP_3:
-Stack: [2, 3]
-执行 OP_ADD:
-弹出 3
-弹出 2
-计算 2 + 3 = 5
-压入 5
-Stack: [5]
+tx_id = sha256(sha256((tx_hex)) 
 ```
 
 
+## 矿工如何验证交易并执行
 
-### 🔍 P2PKH 脚本验证详解
+当矿工（或全节点）收到一笔交易后，需要进行多层次的验证，包括：
+- 检查交易格式的有效性（输入/输出结构、字段完整性等）
+- 检查金额的有效性（输入总额需大于等于输出总额）
+- 检查输入引用的 UTXO 是否存在且未被花费
+- 对于 P2PKH 交易，核心是验证 **scriptSig 能否解锁 scriptPubKey**
+
+验证通过后，矿工会将交易加入内存池，并按照交易手续费（输入总额 - 输出总额）排序，优先打包手续费更高的交易。
+
+### 理解比特币脚本系统
+
+比特币使用一种**基于栈的脚本语言**（Script），栈是使用后进先出（LIFO）的数据结构
+
+比特币脚本使用一个**主栈**（Main Stack）和一个**备用栈**（Alt Stack）, 是两个独立的 LIFO 栈, 绝大部分脚本执行**只用主栈**，备用栈是一个临时存储栈，不能执行操作，主要作用是保留某些脚本的中间值。
 
 
+比特币操作码（opcode）会定义如何操作栈，例如： 
+1. 从 主栈（main stack）取几个值
+2. 怎么处理这些值
+3. 把结果压回栈中
+4. 是否需要访问备用栈（alt stack）
+
+我们在[这里](https://btctools.org/opcodes-list) 可以看到所有的opcode 的定义
+
+例如 ` OP_2 OP_3 OP_ADD ` 执行过程如下：
+
+![栈操作示例](https://img.learnblockchain.cn/pics/20251125201624.png)
+
+脚本验证（Script Validation）需要确保执行后主栈（main stack）顶部是 True 。
+ 
+### P2PKH 脚本验证详解
+
+在验证交易时，节点会从交易中提取两个关键脚本：
+
+1. **scriptSig（解锁脚本）**：从当前交易的输入中获取
+   - 遍历交易的 `inputs` 数组
+   - 对每个输入，读取其 `scriptSig` 字段
+   - 对于 P2PKH，`scriptSig` 包含签名和公钥：`<signature> <pubkey>` ，我们这里包含的是 Alice 的签名和公钥
+
+2. **scriptPubKey（锁定脚本）**：从**被引用的 UTXO** 中获取，从 Alice 作为交易输入 UTXO 中提取
+   - 根据输入的 `previous_txid` 和 `previous_vout`，查找前一交易的输出
+   - 从该输出的 `scriptPubKey` 字段读取锁定脚本
+   - 对于 P2PKH，`scriptPubKey` 格式为：`OP_DUP OP_HASH160 <pubKeyHash> OP_EQUALVERIFY OP_CHECKSIG`
+
+验证时，将 `scriptSig` 和 `scriptPubKey` 按顺序拼接执行：`scriptSig + scriptPubKey`
 
 **完整的 P2PKH 验证脚本：**
 ```
-scriptSig: <signature> <pubkey>
-scriptPubKey: OP_DUP OP_HASH160 <pubKeyHash> OP_EQUALVERIFY OP_CHECKSIG
+<signature> <pubkey>  OP_DUP OP_HASH160 <pubKeyHash> OP_EQUALVERIFY OP_CHECKSIG
 ```
-**执行顺序：**
-1. 先执行 scriptSig（解锁脚本）
-2. 再执行 scriptPubKey（锁定脚本）
-3. 最终栈顶为 true（非零值）则验证通过
----
+若执行后最终栈顶为 true（非零值）则验证通过
 
 
+**逐步执行过程如下**
 
-### 📖 逐步执行过程
+![P2PKH 验证脚本执行流程](https://img.learnblockchain.cn/pics/20251125210451.png)
 
+这里有双重验证：
+- OP_EQUALVERIFY: 验证公钥所有权（pubkey → pubKeyHash）
+- OP_CHECKSIG: 验证私钥所有权（signature + pubkey）
 
-
-假设：
-- `<signature>` = `304502...01` (DER 签名 + SIGHASH_ALL)
-- `<pubkey>` = `0371cf1060c269...` (压缩公钥)
-- `<pubKeyHash>` = `62e907b15cbf27...` (20 bytes)
----
-
-
-
-#### **初始状态**
-
-
-
-```
-Script: <signature> <pubkey> OP_DUP OP_HASH160 <pubKeyHash> OP_EQUALVERIFY OP_CHECKSIG
-Stack: []
-```
----
-
-
-
-#### **步骤 1：压入 signature**
-
-
-
-```
-Operation: <signature>
-Action: 将签名数据压入栈
-Stack: [
-<signature>
-]
-```
----
-
-
-
-#### **步骤 2：压入 pubkey**
-
-
-
-```
-Operation: <pubkey>
-Action: 将公钥数据压入栈
-Stack: [
-<signature>
-<pubkey>
-]
-```
-**此时 scriptSig 执行完毕。**
----
-
-
-
-#### **步骤 3：OP_DUP 复制栈顶**
-
-
-
-```
-Operation: OP_DUP
-Action: 复制栈顶元素（pubkey）
-Stack: [
-<signature>
-<pubkey>
-<pubkey> ← 复制的
-]
-```
-**为什么需要复制？**
-因为后面的 OP_HASH160 会消耗一个 pubkey，但 OP_CHECKSIG 还需要一个 pubkey。
-
-
-
----
-
-
-
-#### **步骤 4：OP_HASH160 哈希栈顶**
-
-
-
-```
-Operation: OP_HASH160
-Action:
-1. 弹出栈顶的 <pubkey>
-2. 计算 RIPEMD160(SHA256(<pubkey>))
-3. 压入哈希结果
-Stack: [
-<signature>
-<pubkey>
-<pubKeyHash_computed> ← HASH160(pubkey)
-]
-```
----
-
-
-
-#### **步骤 5：压入预期的 pubKeyHash**
-
-
-
-```
-Operation: <pubKeyHash>
-Action: 将 scriptPubKey 中的 pubKeyHash 压入栈
-Stack: [
-<signature>
-<pubkey>
-<pubKeyHash_computed>
-<pubKeyHash_expected> ← scriptPubKey 中的
-]
-```
----
-
-
-
-#### **步骤 6：OP_EQUALVERIFY 验证相等**
-
-
-
-```
-Operation: OP_EQUALVERIFY
-Action:
-1. 弹出栈顶两个元素
-2. 比较 pubKeyHash_computed == pubKeyHash_expected
-3. 如果相等，继续；否则脚本失败
-比较：
-pubKeyHash_computed = 62e907b15cbf27...
-pubKeyHash_expected = 62e907b15cbf27...
-结果: ✓ 相等
-Stack: [
-<signature>
-<pubkey>
-]
-```
-**此步骤验证了：提供的公钥确实对应这个地址（pubKeyHash）。**
----
-
-
-
-#### **步骤 7：OP_CHECKSIG 验证签名**
-
-
-
-```
-Operation: OP_CHECKSIG
-Action:
-1. 弹出 <pubkey>
-2. 弹出 <signature>
-3. 提取 signature 中的 sighash type
-4. 构造签名前置（signature preimage）
-5. 计算交易哈希
-6. 使用 ECDSA 验证: VERIFY(pubkey, signature, tx_hash)
-7. 压入验证结果（true 或 false）
-验证过程：
-a. 解析 signature，提取 sighash type (0x01 = SIGHASH_ALL)
-b. 根据 sighash type 构造签名前置
-c. 计算 tx_hash = SHA256(SHA256(签名前置))
-d. ECDSA 验证: secp256k1_verify(pubkey, signature, tx_hash)
-e. 结果: ✓ 签名有效
-Stack: [
-1 ← true (签名验证成功)
-]
-```
-**此步骤验证了：签名者拥有对应公钥的私钥。**
----
-
-
-
-#### **最终状态**
-
-
-
-```
-Script: (已全部执行)
-Stack: [1]
-栈顶 = 1 (true)
-验证结果: ✓ 交易有效
-```
----
-
-
-
-### 🔐 OP_CHECKSIG 深入解析
-
-
+### OP_CHECKSIG 深入解析
 
 `OP_CHECKSIG` 是最复杂的操作码，它执行以下步骤：
 
+**1. 提取 Sighash Type**
 
-
-#### **1. 提取 Sighash Type**
-
-
-
+从签名的最后一个字节提取 sighash type。例如：
 ```
-signature 的最后一个字节是 sighash type
-例如：304502...2a01
+304502...2a01
 └─ 0x01 (SIGHASH_ALL)
 ```
 
+**2. 构造签名原像（Signature Preimage）**
 
+验证时需要重新构造签名原像，这是因为签名和验证的流程是对称的：
 
-#### **2. 构造签名前置**
+- **签名时**：使用私钥对交易哈希签名
+  ```
+  signature = sign(private_key, tx_hash)
+  ```
 
+- **验证时**：使用公钥验证签名是否匹配交易哈希
+  ```
+  result = verify(pubkey, signature, tx_hash)
+  ```
 
+为了验证签名，节点需要重新计算出相同的 `tx_hash`。具体做法是：
+1. 根据提取的 sighash type，重新构建交易的副本
+2. 将所有输入的 `scriptSig` 清空，只将当前输入临时替换为被引用 UTXO 的 `scriptPubKey`
+3. 根据 sighash type 决定保留哪些输入和输出（SIGHASH_ALL 保留全部）
+4. 序列化交易并追加 4 字节的 sighash type，得到签名原像
 
-根据 sighash type 修改交易的副本：
-```python
-def create_sighash_preimage(tx, input_index, prev_scriptPubKey, sighash_type):
-tx_copy = tx.copy()
-if sighash_type == SIGHASH_ALL:
+**3. 计算交易哈希**
 
-# 清空所有输入的 scriptSig
-
-for i, inp in enumerate(tx_copy.inputs):
-if i == input_index:
-inp.scriptSig = prev_scriptPubKey # 当前输入使用 prev scriptPubKey
-else:
-inp.scriptSig = b'' # 其他输入清空
-elif sighash_type == SIGHASH_NONE:
-
-# 清空所有输出
-
-tx_copy.outputs = []
-
-# ...
-
-
-
-elif sighash_type == SIGHASH_SINGLE:
-
-# 只保留对应索引的输出
-
-# ...
-
-
-
-# 序列化并添加 sighash type
-
-serialized = tx_copy.serialize()
-serialized += sighash_type.to_bytes(4, 'little')
-return serialized
+对签名原像执行双重 SHA256：
+```
+tx_hash = SHA256(SHA256(签名原像))
 ```
 
+**4. ECDSA 验证**
 
-
-#### **3. 计算交易哈希**
-
-
-
-```
-tx_hash = SHA256(SHA256(签名前置))
-```
-
-
-
-#### **4. ECDSA 验证**
-
-
-
+使用 secp256k1 曲线进行 ECDSA 验证：
 ```
 result = secp256k1_verify(
-public_key=pubkey,
-signature=(r, s),
-message=tx_hash
+    public_key=pubkey,
+    signature=(r, s),
+    message=tx_hash
 )
 ```
-**验证公式（ECDSA）：**
+
+如果验证通过，`OP_CHECKSIG` 将 1（true）压入栈；否则压入 0（false）。
+
+如果栈顶是 1，则脚本验证通过。但交易要最终生效，还需要通过矿工打包执行，矿工会对**手续费检查**，以确实其有足够的收益。
+
+#### 手续费如何收取
+
+比特币的手续费机制非常巧妙：**手续费不需要显式输出，而是通过输入和输出的差额自动计算**。
+
+**手续费计算公式：**
 ```
-已知：
-- 公钥 Q = d × G (d 是私钥)
-- 签名 (r, s)
-- 消息哈希 e
-验证：
-1. w = s⁻¹ mod n
-2. u₁ = e × w mod n
-3. u₂ = r × w mod n
-4. (x, y) = u₁ × G + u₂ × Q
-5. 验证 x mod n == r
+手续费 = 所有输入 UTXO 的金额总和 - 所有输出的金额总和
 ```
-如果验证通过，OP_CHECKSIG 压入 1（true）；否则压入 0（false）。
 
-
-
----
-
-
-
-### 🚫 常见失败情况
-
-
-
-| 失败原因 | 发生在哪一步 | 错误描述 |
-|---------|------------|---------|
-| **公钥不匹配** | OP_EQUALVERIFY | HASH160(pubkey) ≠ pubKeyHash |
-| **签名无效** | OP_CHECKSIG | ECDSA 验证失败 |
-| **UTXO 已花费** | 验证前 | 输入引用的 UTXO 不在 UTXO 集合中 |
-| **金额不平衡** | 验证前 | 输入总额 < 输出总额 + 手续费 |
-| **脚本格式错误** | 任意步骤 | 栈下溢、数据不足等 |
----
-
-
-
-### 🎨 可视化执行流程
-
-
-
+**示例：**
+假设 Alice 花费一个 0.01 BTC 的 UTXO，向 Bob 支付 0.009 BTC，找零 0.0009 BTC：
 ```
-┌─────────────────────────────────────────────────────────────┐
-│ 交易验证流程 │
-└─────────────────────────────────────────────────────────────┘
-1. 基本验证
-├─ 语法检查 ✓
-├─ 输入/输出格式 ✓
-└─ 金额有效性 ✓
-2. 输入验证（对每个输入）
-├─ 查找前一交易的输出
-│ └─ UTXO 是否存在？ ✓
-│
-├─ 获取 scriptPubKey
-│ └─ scriptPubKey = UTXO.scriptPubKey
-│
-├─ 组合脚本
-│ └─ script = scriptSig + scriptPubKey
-│
-├─ 执行脚本
-│ ├─ 1: <signature> → Stack
-│ ├─ 2: <pubkey> → Stack
-│ ├─ 3: OP_DUP → Stack
-│ ├─ 4: OP_HASH160 → Stack
-│ ├─ 5: <pubKeyHash> → Stack
-│ ├─ 6: OP_EQUALVERIFY → Verify
-│ └─ 7: OP_CHECKSIG → Verify
-│
-└─ 检查栈顶
-└─ 栈顶 == true? ✓
-3. 全局验证
-├─ 输入总额 ≥ 输出总额 ✓
-└─ 交易费合理 ✓
-4. 结果
-└─ ✅ 交易有效，加入内存池或区块
+输入总额：  0.01 BTC
+输出总额：  0.009 + 0.0009 = 0.0099 BTC
+手续费：    0.01 - 0.0099 = 0.0001 BTC (10000 satoshi)
 ```
----
+
+这 0.0001 BTC 不会出现在交易的任何输出中，而是作为"差额"被矿工收取。当交易被打包进区块后，矿工在构造区块的 coinbase 交易时，可以将所有交易的手续费累加到自己账户。
 
 
+**手续费检查：**
 
-### 💡 关键洞察
+1. **基本检查**：输入总额必须 ≥ 输出总额（否则交易无效）
+   - 输入总额 = 输出总额：零手续费交易，允许但可能被矿工忽略
+   - 输入总额 > 输出总额：差额就是手续费
 
+2. **交易大小与手续费费率**
 
+   矿工不是简单地按手续费金额排序，而是按**手续费费率（fee rate）**排序：
+   ```
+   手续费费率 = 手续费总额 / 交易大小（字节）
+   单位：sat/vB（satoshi per virtual byte，聪/虚拟字节）
+   ```
 
-1. **双重验证**
-- OP_EQUALVERIFY: 验证公钥所有权（pubkey → pubKeyHash）
-- OP_CHECKSIG: 验证私钥所有权（signature + pubkey）
-2. **脚本组合**
-- scriptSig 由花费方提供（证明）
-- scriptPubKey 由 UTXO 定义（条件）
-- 两者组合执行，实现"锁"与"钥匙"的验证
-3. **安全性保证**
-- 即使知道公钥，也无法伪造签名（ECDSA 安全性）
-- 篡改交易任何部分都会使签名失效
-- 重放签名到其他交易也会失败（签名包含交易哈希）
-4. **效率设计**
-- 栈操作简单高效
-- 脚本确定性终止
-- 并行验证不同输入
----
+  矿工通常会按费率从高到低排序交易，优先打包费率高的交易，直到区块接近满，这样矿工可以在有限空间内获得最大收益。
+
+在矿工打包之后，才算是真正完成了这笔交易。
 
 
-
-### 🔬 实践：手动验证一笔交易
-
-
-
-让我们用实际数据验证一笔交易：
-**交易 Hex:**
-```
-0200000001d782164dfe436d75b9d741198a96e2f67710d0c9a305b2594ca4057283cba76b
-010000006b483045022100c7e2b68e515763286d9f776045728021f08e74a07e607575
-730cfa20e81777a002200c8b96b03a6baf25cf40d1978ab29f9ee083009e9fd90206f9
-adff761326c42a01210371cf1060c2693a35fa250861530a25e3064df58a8ca09b48c4
-73b8382d1d8455ffffffff0100100000000000001976a914de8d00e55147f27899833b
-27fe906499ebcadee188ac00000000
-```
-**解析：**
-1. **version:** `02000000` = 2
-2. **输入数量:** `01` = 1
-3. **输入 #0:**
-- txid: `6ba7cb837205a44c59b205a3c9d01077f6e2968a1941d7b9756d43fe4d1682d7`
-- vout: `01000000` = 1
-- scriptSig: `483045...8455` (107 bytes)
-- 签名: `3045022100c7e2...c42a01`
-- 公钥: `0371cf1060c269...1d8455`
-4. **输出数量:** `01` = 1
-5. **输出 #0:**
-- value: `0010000000000000` = 4096 sats
-- scriptPubKey: `76a914de8d...ee188ac` (P2PKH)
-**验证步骤：**
-```
-1. 执行 scriptSig:
-Stack: [<sig>, <pubkey>]
-2. 执行 scriptPubKey:
-OP_DUP: Stack: [<sig>, <pubkey>, <pubkey>]
-OP_HASH160: Stack: [<sig>, <pubkey>, <hash>]
-<pubKeyHash>: Stack: [<sig>, <pubkey>, <hash>, <expected_hash>]
-OP_EQUALVERIFY: Stack: [<sig>, <pubkey>] (如果相等)
-OP_CHECKSIG: Stack: [1] (如果签名有效)
-3. 最终: Stack = [1] → ✅ 验证通过
-```
----
-
-
+有兴趣的朋友可以使用 [send-p2pkh.ts](https://github.com/lbc-team/hello_bitcoin/blob/main/src/send-p2pkh.ts) 发起一笔自己的交易。
 
 ## 总结
-
-
 
 P2PKH 交易的完整流程：
 1. **UTXO 模型**：比特币使用未花费输出作为账本状态
 2. **交易构造**：选择 UTXO，构造输入输出，签名证明所有权
 3. **脚本执行**：通过基于栈的脚本语言验证交易有效性
+   
 **核心机制：**
 - 锁定脚本（scriptPubKey）定义"如何解锁"
 - 解锁脚本（scriptSig）提供"证明"
 - 脚本执行验证"证明"满足"条件"
-这种设计实现了：
-- ✅ **去中心化**：无需可信第三方验证
-- ✅ **安全性**：密码学保证无法伪造
-- ✅ **可扩展性**：脚本系统支持复杂条件
-- ✅ **确定性**：相同输入总是相同结果
+
 P2PKH 只是比特币脚本系统的冰山一角。更复杂的脚本类型（如多签、时间锁、哈希锁）都基于相同的执行模型构建。
 
 

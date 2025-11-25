@@ -8,6 +8,7 @@
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts",
     "generate:address": "ts-node src/address-types.ts",
+    "generate:address:handcraft": "ts-node src/address-types-handcraft.ts",
     "breakout:p2pkh": "ts-node src/breakout-p2pkh-tx-cal-txid.ts",
     "send:p2pkh": "ts-node src/send-p2pkh.ts",
     "clean": "rm -rf dist",
