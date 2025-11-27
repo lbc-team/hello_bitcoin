@@ -11,6 +11,8 @@
     "generate:address:handcraft": "ts-node src/address-types-handcraft.ts",
     "breakout:p2pkh": "ts-node src/breakout-p2pkh-tx-cal-txid.ts",
     "send:p2pkh": "ts-node src/send-p2pkh.ts",
+    "generate:multisig": "ts-node src/generate-multisig-p2sh.ts",
+    "send:multisig": "ts-node src/send-from-multisig-p2sh.ts",
     "clean": "rm -rf dist",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
